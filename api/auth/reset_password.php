@@ -6,9 +6,10 @@
  * Place this in: /api/auth/reset_password.php
  */
 
-// =============================================================================
-// CORS Headers - Allow requests from your frontend
-// =============================================================================
+// Load your existing config (adjust path as needed)
+require_once __DIR__ . '/../config.php';
+
+// Override CORS for more specific control
 header("Access-Control-Allow-Origin: https://mooc-frontend-myqa.onrender.com");
 header("Access-Control-Allow-Methods: POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
@@ -31,9 +32,6 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 // =============================================================================
 // Configuration
 // =============================================================================
-require_once __DIR__ . '/db_config.php'; // Your existing database config
-
-// Password requirements
 $MIN_PASSWORD_LENGTH = 6;
 
 // =============================================================================
@@ -41,6 +39,9 @@ $MIN_PASSWORD_LENGTH = 6;
 // =============================================================================
 
 try {
+    // $pdo is already available from config.php
+    global $pdo;
+
     // Get JSON input
     $input = file_get_contents('php://input');
     $data = json_decode($input, true);
@@ -62,62 +63,37 @@ try {
         exit();
     }
 
-    // Connect to database
-    $conn = new mysqli($db_host, $db_user, $db_pass, $db_name, $db_port);
-    
-    if ($conn->connect_error) {
-        error_log("Database connection failed: " . $conn->connect_error);
-        http_response_code(500);
-        echo json_encode(["message" => "Database connection failed"]);
-        exit();
-    }
-
     // Start transaction
-    $conn->begin_transaction();
+    $pdo->beginTransaction();
 
     try {
         // Check if token exists and is not expired
-        $stmt = $conn->prepare("SELECT user_id FROM password_reset_tokens WHERE token = ? AND expires_at > NOW()");
-        $stmt->bind_param("s", $token);
-        $stmt->execute();
-        $result = $stmt->get_result();
+        $stmt = $pdo->prepare("SELECT user_id FROM password_reset_tokens WHERE token = ? AND expires_at > NOW()");
+        $stmt->execute([$token]);
+        $tokenRecord = $stmt->fetch();
 
-        if ($result->num_rows === 0) {
+        if (!$tokenRecord) {
+            $pdo->rollBack();
             http_response_code(401);
             echo json_encode(["message" => "Invalid or expired password reset link."]);
-            $stmt->close();
-            $conn->close();
             exit();
         }
 
-        $tokenRecord = $result->fetch_assoc();
         $userId = $tokenRecord['user_id'];
-        $stmt->close();
 
         // Hash the new password using bcrypt
         $hashedPassword = password_hash($newPassword, PASSWORD_BCRYPT);
 
         // Update user's password
-        $stmt = $conn->prepare("UPDATE users SET password = ? WHERE id = ?");
-        $stmt->bind_param("si", $hashedPassword, $userId);
-        
-        if (!$stmt->execute()) {
-            throw new Exception("Failed to update password: " . $stmt->error);
-        }
-        $stmt->close();
+        $stmt = $pdo->prepare("UPDATE users SET password = ? WHERE id = ?");
+        $stmt->execute([$hashedPassword, $userId]);
 
-        // Delete the used token (and any other tokens for this user)
-        $stmt = $conn->prepare("DELETE FROM password_reset_tokens WHERE token = ?");
-        $stmt->bind_param("s", $token);
-        
-        if (!$stmt->execute()) {
-            throw new Exception("Failed to invalidate token: " . $stmt->error);
-        }
-        $stmt->close();
+        // Delete the used token
+        $stmt = $pdo->prepare("DELETE FROM password_reset_tokens WHERE token = ?");
+        $stmt->execute([$token]);
 
         // Commit transaction
-        $conn->commit();
-        $conn->close();
+        $pdo->commit();
 
         // Success
         http_response_code(200);
@@ -125,10 +101,14 @@ try {
 
     } catch (Exception $e) {
         // Rollback on error
-        $conn->rollback();
+        $pdo->rollBack();
         throw $e;
     }
 
+} catch (PDOException $e) {
+    error_log("Database error in reset_password.php: " . $e->getMessage());
+    http_response_code(500);
+    echo json_encode(["message" => "Database error occurred."]);
 } catch (Exception $e) {
     error_log("Exception in reset_password.php: " . $e->getMessage());
     http_response_code(500);

@@ -6,9 +6,10 @@
  * Place this in: /api/auth/forgot_password.php
  */
 
-// =============================================================================
-// CORS Headers - Allow requests from your frontend
-// =============================================================================
+// Load your existing config (adjust path as needed)
+require_once __DIR__ . '/../config.php';
+
+// Override CORS for more specific control (optional - your config already handles this)
 header("Access-Control-Allow-Origin: https://mooc-frontend-myqa.onrender.com");
 header("Access-Control-Allow-Methods: POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
@@ -29,40 +30,22 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 }
 
 // =============================================================================
-// Configuration
+// Email Configuration - Set these in your environment variables on Render
 // =============================================================================
-require_once __DIR__ . '/db_config.php'; // Your existing database config
-
-// Email Configuration - Set these in your environment or directly here
-$SMTP_HOST = getenv('SMTP_SERVER') ?: 'smtp.gmail.com';
-$SMTP_PORT = getenv('SMTP_PORT') ?: 587;
-$SMTP_USERNAME = getenv('MAIL_USERNAME') ?: '';
-$SMTP_PASSWORD = str_replace(' ', '', getenv('MAIL_PASSWORD') ?: ''); // Remove spaces from app password
-$SENDER_EMAIL = getenv('MAIL_USERNAME') ?: '';
+$SMTP_HOST = $_ENV['SMTP_SERVER'] ?? getenv('SMTP_SERVER') ?: 'smtp.gmail.com';
+$SMTP_PORT = $_ENV['SMTP_PORT'] ?? getenv('SMTP_PORT') ?: 587;
+$SMTP_USERNAME = $_ENV['MAIL_USERNAME'] ?? getenv('MAIL_USERNAME') ?: '';
+$SMTP_PASSWORD = str_replace(' ', '', $_ENV['MAIL_PASSWORD'] ?? getenv('MAIL_PASSWORD') ?: '');
+$SENDER_EMAIL = $_ENV['MAIL_USERNAME'] ?? getenv('MAIL_USERNAME') ?: '';
 $SENDER_NAME = 'SilayLearn';
-$FRONTEND_URL = getenv('FRONTEND_URL') ?: 'https://mooc-frontend-myqa.onrender.com';
+$FRONTEND_URL = $_ENV['FRONTEND_URL'] ?? getenv('FRONTEND_URL') ?: 'https://mooc-frontend-myqa.onrender.com';
 
 // =============================================================================
-// PHPMailer - Using Composer autoload or direct include
+// PHPMailer - Already loaded via your config.php's vendor/autoload.php
 // =============================================================================
-// If using Composer: require_once __DIR__ . '/vendor/autoload.php';
-// If not using Composer, you'll need to include PHPMailer files manually
-
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\SMTP;
 use PHPMailer\PHPMailer\Exception;
-
-// Try to load PHPMailer
-$phpmailerLoaded = false;
-if (file_exists(__DIR__ . '/vendor/autoload.php')) {
-    require_once __DIR__ . '/vendor/autoload.php';
-    $phpmailerLoaded = true;
-} elseif (file_exists(__DIR__ . '/PHPMailer/src/PHPMailer.php')) {
-    require_once __DIR__ . '/PHPMailer/src/Exception.php';
-    require_once __DIR__ . '/PHPMailer/src/PHPMailer.php';
-    require_once __DIR__ . '/PHPMailer/src/SMTP.php';
-    $phpmailerLoaded = true;
-}
 
 // =============================================================================
 // Helper Functions
@@ -148,16 +131,17 @@ HTML;
  * Send reset email using PHPMailer
  */
 function sendResetEmail($toEmail, $resetToken) {
-    global $SMTP_HOST, $SMTP_PORT, $SMTP_USERNAME, $SMTP_PASSWORD, $SENDER_EMAIL, $SENDER_NAME, $FRONTEND_URL, $phpmailerLoaded;
+    global $SMTP_HOST, $SMTP_PORT, $SMTP_USERNAME, $SMTP_PASSWORD, $SENDER_EMAIL, $SENDER_NAME, $FRONTEND_URL;
 
     $resetLink = $FRONTEND_URL . "/reset-password?token=" . $resetToken;
     $subject = "Action Required: Reset Your SilayLearn Password";
     $htmlBody = createResetPasswordHtmlBody($resetLink);
     $plainTextBody = "Hello,\nYou requested a password reset. Please click the link below:\n{$resetLink}";
 
-    if (!$phpmailerLoaded) {
+    // Check if PHPMailer is available
+    if (!class_exists('PHPMailer\PHPMailer\PHPMailer')) {
         error_log("PHPMailer not loaded - cannot send email");
-        return [false, "Email service not configured"];
+        return [false, "Email service not configured. Please install PHPMailer via Composer."];
     }
 
     try {
@@ -196,6 +180,9 @@ function sendResetEmail($toEmail, $resetToken) {
 // =============================================================================
 
 try {
+    // $pdo is already available from config.php
+    global $pdo;
+
     // Get JSON input
     $input = file_get_contents('php://input');
     $data = json_decode($input, true);
@@ -215,34 +202,19 @@ try {
         exit();
     }
 
-    // Connect to database
-    $conn = new mysqli($db_host, $db_user, $db_pass, $db_name, $db_port);
-    
-    if ($conn->connect_error) {
-        error_log("Database connection failed: " . $conn->connect_error);
-        http_response_code(500);
-        echo json_encode(["message" => "Database connection failed"]);
-        exit();
-    }
-
     // Check if user exists
-    $stmt = $conn->prepare("SELECT id FROM users WHERE email = ?");
-    $stmt->bind_param("s", $email);
-    $stmt->execute();
-    $result = $stmt->get_result();
+    $stmt = $pdo->prepare("SELECT id FROM users WHERE email = ?");
+    $stmt->execute([$email]);
+    $user = $stmt->fetch();
 
-    if ($result->num_rows === 0) {
+    if (!$user) {
         // Security: Don't reveal if email exists or not
         http_response_code(200);
         echo json_encode(["message" => "If an account exists, a password reset link has been sent."]);
-        $stmt->close();
-        $conn->close();
         exit();
     }
 
-    $user = $result->fetch_assoc();
     $userId = $user['id'];
-    $stmt->close();
 
     // Generate reset token
     $resetToken = generateUUID();
@@ -255,30 +227,21 @@ try {
         error_log("Failed to send reset email to {$email}: {$emailMessage}");
         http_response_code(500);
         echo json_encode(["message" => "Failed to send email.", "error" => $emailMessage]);
-        $conn->close();
         exit();
     }
 
     // Save token to database
-    $stmt = $conn->prepare("INSERT INTO password_reset_tokens (user_id, token, expires_at) VALUES (?, ?, ?)");
-    $stmt->bind_param("iss", $userId, $resetToken, $expiresAt);
-    
-    if (!$stmt->execute()) {
-        error_log("Failed to save reset token: " . $stmt->error);
-        http_response_code(500);
-        echo json_encode(["message" => "Failed to generate reset link."]);
-        $stmt->close();
-        $conn->close();
-        exit();
-    }
-
-    $stmt->close();
-    $conn->close();
+    $stmt = $pdo->prepare("INSERT INTO password_reset_tokens (user_id, token, expires_at) VALUES (?, ?, ?)");
+    $stmt->execute([$userId, $resetToken, $expiresAt]);
 
     // Success
     http_response_code(200);
     echo json_encode(["message" => "Password reset link sent. Check your inbox."]);
 
+} catch (PDOException $e) {
+    error_log("Database error in forgot_password.php: " . $e->getMessage());
+    http_response_code(500);
+    echo json_encode(["message" => "Database error occurred."]);
 } catch (Exception $e) {
     error_log("Exception in forgot_password.php: " . $e->getMessage());
     http_response_code(500);
