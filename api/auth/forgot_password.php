@@ -6,23 +6,12 @@
  * Place this in: /api/auth/forgot_password.php
  */
 
-// Load your existing config (adjust path as needed)
-require_once __DIR__ . '/../config.php';
+// Load config from ROOT (2 levels up from /api/auth/)
+require_once __DIR__ . '/../../config.php';
 
-// Override CORS for more specific control (optional - your config already handles this)
-header("Access-Control-Allow-Origin: https://mooc-frontend-myqa.onrender.com");
-header("Access-Control-Allow-Methods: POST, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type, Authorization");
-header("Access-Control-Allow-Credentials: true");
-header("Content-Type: application/json; charset=UTF-8");
+// NOTE: CORS is already handled by config.php - don't set headers again!
 
-// Handle preflight OPTIONS request
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    http_response_code(200);
-    exit();
-}
-
-// Only allow POST requests
+// Only allow POST requests (OPTIONS already handled by config.php)
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
     echo json_encode(["message" => "Method not allowed"]);
@@ -41,7 +30,7 @@ $SENDER_NAME = 'SilayLearn';
 $FRONTEND_URL = $_ENV['FRONTEND_URL'] ?? getenv('FRONTEND_URL') ?: 'https://mooc-frontend-myqa.onrender.com';
 
 // =============================================================================
-// PHPMailer - Already loaded via your config.php's vendor/autoload.php
+// PHPMailer - Using Composer autoload (already loaded in config.php)
 // =============================================================================
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\SMTP;
@@ -138,7 +127,7 @@ function sendResetEmail($toEmail, $resetToken) {
     $htmlBody = createResetPasswordHtmlBody($resetLink);
     $plainTextBody = "Hello,\nYou requested a password reset. Please click the link below:\n{$resetLink}";
 
-    // Check if PHPMailer is available
+    // Check if PHPMailer class exists
     if (!class_exists('PHPMailer\PHPMailer\PHPMailer')) {
         error_log("PHPMailer not loaded - cannot send email");
         return [false, "Email service not configured. Please install PHPMailer via Composer."];
